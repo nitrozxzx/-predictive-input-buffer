@@ -29,6 +29,7 @@
 #include <Geode/ui/Popup.hpp>
 #include <map>
 #include <Geode/modify/PlayerObject.hpp>
+#include <Geode/modify/RingObject.hpp>
 #include <Windows.h>
 #include <algorithm>
 #include <chrono>
@@ -243,8 +244,8 @@ namespace {
         bool swingSmart = true;      // v2.51: swing "could you have flipped back" scoring + spam guard
         bool train = false;          // v2.51: training mode: predict, never delay, show how early you were
         bool perLevel = true;        // v2.51: stage + switches remembered per level
-        bool heatmap = true;         // v2.51: death marks on the progress bar
-        bool saveDing = true;        // v2.56: ding when a click is saved
+        bool heatmap = false;         // v2.51: death marks on the progress bar
+        bool saveDing = false;        // v2.56: ding when a click is saved
         CCLabelBMFont* hintLabel = nullptr;  // v2.51: training hint ("2t early")
         CCDrawNode* heatNode = nullptr;      // v2.51: death marks on the progress bar
         bool ufoSmart = true;        // v2.40: UFO landing + "could you have flapped again" scoring
@@ -462,8 +463,8 @@ namespace {
         buf.swingSmart = mod->getSettingValue<bool>("swing-smart");
         buf.train = mod->getSettingValue<bool>("training-mode");
         buf.perLevel = mod->getSettingValue<bool>("per-level-settings");
-        buf.heatmap = mod->getSettingValue<bool>("death-heatmap");
-        buf.saveDing = mod->getSettingValue<bool>("save-ding");
+        buf.heatmap = false; // Presentation disabled, including existing saved settings.
+        buf.saveDing = false;
         buf.moreTime = mod->getSettingValue<bool>("more-time-death-spots");
         buf.dashAutoRelease = mod->getSettingValue<bool>("dash-auto-release");
         buf.perfLog = mod->getSettingValue<bool>("perf-log");
@@ -534,29 +535,9 @@ namespace {
         }
     }
 
-    // v2.14: a run outside practice where auto-release can press for you is marked on screen.
-    // v2.46 watermark: whenever the buffer is on (any stage but OFF) the level shows it, and
-    // can't be turned off, so runs made with the mod are recognisable.
-    void refreshWatermark() {
-        if (!buf.watermark) {
-            return;
-        }
-        // v2.57: hidden in practice mode (practice runs can't be submitted, and it crowded the
-        // checkpoint buttons); always shown in normal mode while the buffer is on.
-        auto* layer = GameManager::get()->m_playLayer;
-        buf.watermark->setVisible(buf.enabled && !(layer && layer->m_isPracticeMode));
-        buf.watermark->setString(fmt::format("Click Before Frames  |  {}", stageText()).c_str());
-    }
-
-    void refreshAutoTag() {
-        if (!buf.autoTag) {
-            return;
-        }
-        auto* layer = GameManager::get()->m_playLayer;
-        bool on = buf.enabled && buf.autoNormalRuns && (buf.autoRelease || buf.robotAutoRelease || buf.dashAutoRelease) && layer &&
-            !layer->m_isPracticeMode;
-        buf.autoTag->setVisible(on);
-    }
+    // This build has no gameplay indicators; callers may still refresh settings.
+    void refreshWatermark() {}
+    void refreshAutoTag() {}
 
     size_t memorySpots();
 
@@ -3296,10 +3277,7 @@ class BufferMenu : public geode::Popup {
         { "swing-smart", "Smart swing" },
         { "cbf-sync", "CBF sync" },
         { "predict-moving-objects", "Predict moving objects" },
-        { nullptr, "Path view (F10)" },
-        { "training-mode", "Training (hints only)" },
-        { "death-heatmap", "Death heatmap" },
-        { "save-ding", "Ding on save" },
+        { "training-mode", "Training (log only)" },
         { "performance-mode", "Performance mode" },
         { "explain-inputs", "Explain inputs (debug)" },
     };
@@ -3601,29 +3579,12 @@ public:
     }
 };
 
-// v2.46: the level complete screen says so if the buffer was on during the attempt.
+// Keep attempt bookkeeping without attaching completion-screen labels.
 class $modify(BufEndLevelLayer, EndLevelLayer) {
     void customSetup() {
         EndLevelLayer::customSetup();
         if (!buf.usedThisAttempt) {
             return;
-        }
-        auto win = CCDirector::get()->getWinSize();
-        auto* label = CCLabelBMFont::create("Click Before Frames was on", "bigFont.fnt");
-        label->setScale(0.35f);
-        label->setColor({ 150, 205, 255 });
-        label->setOpacity(170);
-        label->setAnchorPoint({ 1.f, 1.f });
-        label->setPosition({ win.width - 6.f, win.height - 4.f });
-        this->addChild(label, 100);
-        if (attemptStats.saves > 0) {
-            auto* stats = CCLabelBMFont::create(attemptSummary().c_str(), "bigFont.fnt");
-            stats->setScale(0.28f);
-            stats->setColor({ 255, 190, 225 });
-            stats->setOpacity(170);
-            stats->setAnchorPoint({ 1.f, 1.f });
-            stats->setPosition({ win.width - 6.f, win.height - 16.f });
-            this->addChild(stats, 100);
         }
         benchFinish();  // a completed run is the best recording there is
         endAttempt();
@@ -3650,7 +3611,7 @@ class $modify(BufPauseLayer, PauseLayer) {
 
 $on_mod(Loaded) {
     buf.console = Mod::get()->getSettingValue<bool>("debug-console");
-    buf.showPath = Mod::get()->getSettingValue<bool>("show-path");
+    buf.showPath = false;
     recoverGlobals();
     buf.stage = std::clamp(static_cast<int>(Mod::get()->getSavedValue<int64_t>("stage", 0)), 0, STAGE_COUNT - 1);
     // v2.62: per-level settings off (switched off once): every level uses the same switches, like v2.43.1
@@ -3755,123 +3716,17 @@ class $modify(BufPlayLayer, PlayLayer) {
         buf.ghost2 = makeGhost(this);
         buf.ghostLayerBase = buf.ghostLayer->getChildrenCount();
 
-        // In-game console (F9): hidden unless the player opens it.
-        constexpr float W = PANEL_W;
-        constexpr float H = PANEL_H;
-        auto win = CCDirector::get()->getWinSize();
-        buf.panel = CCNode::create();
-        buf.panel->setPosition({ 8.f, win.height - H - 8.f });
-        buf.panel->setZOrder(1000);
-
-        // Background: the game's own blue background art, cropped to the panel and
-        // darkened from top to bottom so the text stays readable.
-        auto* stencil = CCLayerColor::create({ 255, 255, 255, 255 }, W, H);
-        auto* clip = CCClippingNode::create(stencil);
-        if (auto* art = CCSprite::create("game_bg_01_001.png")) {
-            auto size = art->getContentSize();
-            art->setScale(std::max(W / size.width, H / size.height));
-            art->setPosition({ W / 2.f, H / 2.f });
-            art->setColor({ 40, 120, 255 });
-            art->setOpacity(150);
-            clip->addChild(art);
-        }
-        auto* shade = CCLayerGradient::create({ 0, 0, 0, 50 }, { 0, 0, 0, 140 }, { 0.f, -1.f });
-        shade->setContentSize({ W, H });
-        clip->addChild(shade);
-        auto* header = CCLayerColor::create({ 0, 0, 0, 80 }, W, 28.f);
-        header->setPosition({ 0.f, H - 28.f });
-        clip->addChild(header);
-        auto* rule = CCLayerColor::create({ 255, 255, 255, 45 }, W - 16.f, 1.f);
-        rule->setPosition({ 8.f, H - 46.f });
-        clip->addChild(rule);
-        buf.panel->addChild(clip);
-
-        if (auto* frame = CCScale9Sprite::create("GJ_square07.png")) {
-            frame->setContentSize({ W, H });
-            frame->setPosition({ W / 2.f, H / 2.f });
-            frame->setOpacity(190);
-            buf.panel->addChild(frame);
-        }
-
-        auto* title = CCLabelBMFont::create("Click Before Frames", "goldFont.fnt");
-        title->setScale(0.55f);
-        title->setAnchorPoint({ 0.f, 0.5f });
-        title->setPosition({ 10.f, H - 14.f });
-        buf.panel->addChild(title);
-
-        auto* version = CCLabelBMFont::create(Mod::get()->getVersion().toVString().c_str(), "chatFont.fnt");
-        version->setScale(0.45f);
-        version->setOpacity(150);
-        version->setAnchorPoint({ 1.f, 0.5f });
-        version->setPosition({ W - 10.f, H - 14.f });
-        buf.panel->addChild(version);
-
-        buf.panelTitle = CCLabelBMFont::create("", "bigFont.fnt");
-        buf.panelTitle->setScale(0.4f);
-        buf.panelTitle->setAnchorPoint({ 0.f, 0.5f });
-        buf.panelTitle->setPosition({ 10.f, H - 37.f });
-        buf.panel->addChild(buf.panelTitle);
-
+        // No mod-owned overlay nodes are attached to gameplay in this build.
+        buf.panel = nullptr;
+        buf.panelTitle = nullptr;
         buf.panelLines.clear();
-        for (size_t i = 0; i < PANEL_LINES; ++i) {
-            auto* line = CCLabelBMFont::create("", "chatFont.fnt");
-            line->setScale(0.55f);
-            line->setAnchorPoint({ 0.f, 0.5f });
-            line->setPosition({ 10.f, H - 57.f - i * 13.f });
-            buf.panel->addChild(line);
-            buf.panelLines.push_back(line);
-        }
-
-        auto* hint = CCLabelBMFont::create("F6 stage  F7 menu  F8 copy log  F9 console  F10 path  F11 forget", "chatFont.fnt");
-        hint->setScale(0.45f);
-        hint->setColor({ 160, 190, 255 });
-        hint->setAnchorPoint({ 0.5f, 0.5f });
-        hint->setPosition({ W / 2.f, 9.f });
-        buf.panel->addChild(hint);
-
-        this->addChild(buf.panel);
-        refreshPanel();
-
-        buf.watermark = CCLabelBMFont::create("", "bigFont.fnt");
-        buf.watermark->setScale(0.28f);
-        buf.watermark->setColor({ 150, 205, 255 });
-        buf.watermark->setOpacity(153);
-        buf.watermark->setAnchorPoint({ 0.f, 0.f });
-        buf.watermark->setPosition({ 6.f, 4.f });
-        buf.watermark->setZOrder(1000);
-        this->addChild(buf.watermark);
-        buf.usedThisAttempt = false;
-        refreshWatermark();
-
-        buf.autoTag = CCLabelBMFont::create("AUTO INPUTS ON", "bigFont.fnt");
-        buf.autoTag->setScale(0.24f);
-        buf.autoTag->setColor({ 255, 120, 120 });
-        buf.autoTag->setOpacity(153);  // 60%, like the console; still readable in a recording
-        buf.autoTag->setAnchorPoint({ 1.f, 0.f });
-        buf.autoTag->setPosition({ win.width - 6.f, 4.f });
-        buf.autoTag->setZOrder(1000);
-        this->addChild(buf.autoTag);
-        refreshAutoTag();
-
-        buf.hintLabel = CCLabelBMFont::create("", "bigFont.fnt");
-        buf.hintLabel->setColor({ 255, 170, 215 });
-        buf.hintLabel->setOpacity(0);
-        buf.hintLabel->setPosition({ win.width / 2.f, win.height - 40.f });
-        buf.hintLabel->setZOrder(1000);
-        this->addChild(buf.hintLabel);
-
+        buf.panelOpen = false;
+        buf.watermark = nullptr;
+        buf.autoTag = nullptr;
+        buf.hintLabel = nullptr;
         buf.heatNode = nullptr;
-        if (m_progressBar) {
-            buf.heatNode = CCDrawNode::create();
-            m_progressBar->addChild(buf.heatNode, 5);
-            refreshHeatmap();
-        }
-
-        // Path view lives in the object layer, so it scrolls with the level.
-        buf.pathNode = CCDrawNode::create();
-        // v2.48: above the level's shader effects when it has that layer; inside the shader
-        // layer, dark or glow shaders could hide the path completely.
-        (m_aboveShaderObjectLayer ? m_aboveShaderObjectLayer : m_objectLayer)->addChild(buf.pathNode, 9999);
+        buf.pathNode = nullptr;
+        buf.usedThisAttempt = false;
 
         buf.realInput = false;
         buf.appliedInput = false;
@@ -3974,6 +3829,18 @@ class $modify(BufGameObject, GameObject) {
     }
 };
 
+// Ring pulse nodes can be attached to the live scene even by an invisible ghost.
+// Suppress only this visual effect; normal orb activation and dash physics still run.
+class $modify(BufRingObject, RingObject) {
+    static void onModify(auto& self) {
+        (void)self.setHookPriority("RingObject::spawnCircle", HOOK_PRIORITY);
+    }
+
+    void spawnCircle() {
+        if (!buf.simulating) RingObject::spawnCircle();
+    }
+};
+
 class $modify(BufPlayerObject, PlayerObject) {
     static void onModify(auto& self) {
         (void)self.setHookPriority("PlayerObject::playSpiderDashEffect", HOOK_PRIORITY);
@@ -3982,6 +3849,9 @@ class $modify(BufPlayerObject, PlayerObject) {
         (void)self.setHookPriority("PlayerObject::update", HOOK_PRIORITY);
         (void)self.setHookPriority("PlayerObject::incrementJumps", HOOK_PRIORITY);
         (void)self.setHookPriority("PlayerObject::ringJump", HOOK_PRIORITY);
+        (void)self.setHookPriority("PlayerObject::startDashing", HOOK_PRIORITY);
+        (void)self.setHookPriority("PlayerObject::updateDashArt", HOOK_PRIORITY);
+        (void)self.setHookPriority("PlayerObject::updateDashAnimation", HOOK_PRIORITY);
     }
 
     // Runs 240x/sec per player. Ghost steps (during a simulation) skip straight to
@@ -4152,16 +4022,34 @@ class $modify(BufPlayerObject, PlayerObject) {
         PlayerObject::ringJump(ring, skipCheck);
     }
 
-    // Dash orbs don't go through ringJump.
+    // Predictions need dash physics, but must not create visible dash art.
+    void updateDashArt() {
+        if (!ghostEffect()) PlayerObject::updateDashArt();
+    }
+
+    void updateDashAnimation() {
+        if (!ghostEffect()) PlayerObject::updateDashAnimation();
+    }
+
+    // Dash orbs bypass ringJump, so snapshot their shared activation state here too.
     void startDashing(DashRingObject* ring) {
-        if (buf.simulating && isGhost(this)) {
-            buf.orbsUsed.insert(ring);
-            if (buf.orbUsedTick < 0) {
-                buf.orbUsedTick = buf.simTick;
+        if (buf.simulating) {
+            if (!buf.smart || !isGhost(this) || !ring || buf.orbsUsed.contains(ring)) {
+                return;
             }
+            snapshotObject(ring);
+            PlayerObject::startDashing(ring);
+            if (m_isDashing) {
+                buf.orbsUsed.insert(ring);
+                if (buf.orbUsedTick < 0) {
+                    buf.orbUsedTick = buf.simTick;
+                }
+            }
+            return;
         }
         PlayerObject::startDashing(ring);
     }
+
 };
 
 // F6 via the game's own keyboard events: no polling, and it only fires while GD has
@@ -4183,7 +4071,7 @@ class $modify(BufKeyboard, CCKeyboardDispatcher) {
                 BufferMenu::open();
             }
             else if (is(3)) {
-                buf.panelOpen = !buf.panelOpen;
+                buf.panelOpen = false;
                 refreshPanel();
             }
             else if (is(2)) {
@@ -4197,7 +4085,7 @@ class $modify(BufKeyboard, CCKeyboardDispatcher) {
                 say("memory for this level cleared");
             }
             else if (is(4)) {
-                buf.showPath = !buf.showPath;
+                buf.showPath = false;
                 if (buf.pathNode) {
                     buf.pathNode->clear();
                 }
