@@ -23,7 +23,6 @@
 #include <Geode/modify/HardStreak.hpp>
 #include <Geode/modify/LevelEditorLayer.hpp>
 #include <Geode/modify/PlayLayer.hpp>
-#include <Geode/modify/PauseLayer.hpp>
 #include <Geode/modify/EndLevelLayer.hpp>
 #include <Geode/ui/GeodeUI.hpp>
 #include <Geode/ui/Popup.hpp>
@@ -73,16 +72,18 @@ namespace {
         typeBit(GameObjectType::GravityPad) | typeBit(GameObjectType::SpiderPad) | typeBit(GameObjectType::YellowJumpRing) |
         typeBit(GameObjectType::PinkJumpRing) | typeBit(GameObjectType::RedJumpRing) | typeBit(GameObjectType::GravityRing) |
         typeBit(GameObjectType::GreenRing) | typeBit(GameObjectType::DropRing) | typeBit(GameObjectType::CustomRing) |
-        typeBit(GameObjectType::DashRing) | typeBit(GameObjectType::GravityDashRing) | typeBit(GameObjectType::SpiderOrb) |
+        typeBit(GameObjectType::SpiderOrb) |
         typeBit(GameObjectType::InverseGravityPortal) | typeBit(GameObjectType::NormalGravityPortal) |
         typeBit(GameObjectType::GravityTogglePortal);
 
-    // Portals that change too much state to simulate: reaching one ends prediction as "safe".
+    // Prediction boundaries: unsupported portals and dash orbs. Never activate dash orbs
+    // on the ghost: native dash effects still leak despite individual visual hooks.
     constexpr uint64_t STOP_TYPES =
         typeBit(GameObjectType::ShipPortal) | typeBit(GameObjectType::CubePortal) | typeBit(GameObjectType::BallPortal) |
         typeBit(GameObjectType::UfoPortal) | typeBit(GameObjectType::WavePortal) | typeBit(GameObjectType::RobotPortal) |
         typeBit(GameObjectType::SpiderPortal) | typeBit(GameObjectType::SwingPortal) | typeBit(GameObjectType::DualPortal) |
-        typeBit(GameObjectType::SoloPortal) | typeBit(GameObjectType::TeleportPortal) | typeBit(GameObjectType::TeleportOrb);
+        typeBit(GameObjectType::SoloPortal) | typeBit(GameObjectType::TeleportPortal) | typeBit(GameObjectType::TeleportOrb) |
+        typeBit(GameObjectType::DashRing) | typeBit(GameObjectType::GravityDashRing);
 
     // v2.8: size portals are applied to the ghost instead of ending the prediction.
     // (Mirror portals only flip the screen, so the ghost simply ignores them.)
@@ -3591,24 +3592,6 @@ class $modify(BufEndLevelLayer, EndLevelLayer) {
     }
 };
 
-class $modify(BufPauseLayer, PauseLayer) {
-    void customSetup() {
-        PauseLayer::customSetup();
-        auto* sprite = ButtonSprite::create("Buffer", "bigFont.fnt", BufferMenu::currentTheme().button, 0.8f);
-        sprite->setScale(0.6f);
-        auto* button = CCMenuItemSpriteExtra::create(sprite, this, menu_selector(BufPauseLayer::onBufferMenu));
-        auto* menu = CCMenu::create();
-        menu->addChild(button);
-        auto win = CCDirector::get()->getWinSize();
-        menu->setPosition({ win.width - 50.f, 30.f });
-        this->addChild(menu, 10);
-    }
-
-    void onBufferMenu(CCObject*) {
-        BufferMenu::open();
-    }
-};
-
 $on_mod(Loaded) {
     buf.console = Mod::get()->getSettingValue<bool>("debug-console");
     buf.showPath = false;
@@ -4001,6 +3984,10 @@ class $modify(BufPlayerObject, PlayerObject) {
             if (!buf.smart || !isGhost(this)) {
                 return;
             }
+            if (typeinfo_cast<DashRingObject*>(ring)) {
+                buf.ghostHitPortal = true;
+                return;
+            }
             if (buf.orbsUsed.contains(ring)) {
                 return;
             }
@@ -4031,20 +4018,11 @@ class $modify(BufPlayerObject, PlayerObject) {
         if (!ghostEffect()) PlayerObject::updateDashAnimation();
     }
 
-    // Dash orbs bypass ringJump, so snapshot their shared activation state here too.
+    // Fail closed if a cached touched-ring list reaches this path despite filtering.
+    // Real-player activation is forwarded unchanged.
     void startDashing(DashRingObject* ring) {
         if (buf.simulating) {
-            if (!buf.smart || !isGhost(this) || !ring || buf.orbsUsed.contains(ring)) {
-                return;
-            }
-            snapshotObject(ring);
-            PlayerObject::startDashing(ring);
-            if (m_isDashing) {
-                buf.orbsUsed.insert(ring);
-                if (buf.orbUsedTick < 0) {
-                    buf.orbUsedTick = buf.simTick;
-                }
-            }
+            buf.ghostHitPortal = true;
             return;
         }
         PlayerObject::startDashing(ring);
@@ -4112,6 +4090,10 @@ class $modify(BufBaseGameLayer, GJBaseGameLayer) {
     bool canBeActivatedByPlayer(PlayerObject* player, EffectGameObject* object) {
         if (buf.simulating) {
             if (!buf.smart || !isGhost(player) || !object) {
+                return false;
+            }
+            if (typeinfo_cast<DashRingObject*>(object)) {
+                buf.ghostHitPortal = true;
                 return false;
             }
             // v2.16: an orb can be checked on every tick you're inside it. Before, the first
@@ -4249,6 +4231,10 @@ class $modify(BufBaseGameLayer, GJBaseGameLayer) {
     void playerTouchedRing(PlayerObject* player, RingObject* ring) {
         if (buf.simulating) {
             if (!buf.smart || !isGhost(player)) {
+                return;
+            }
+            if (typeinfo_cast<DashRingObject*>(ring)) {
+                buf.ghostHitPortal = true;
                 return;
             }
             snapshotObject(ring);
