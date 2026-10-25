@@ -3,9 +3,9 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v2.76.0",
+	"version": "v2.76.1",
 	"id": "basu.input-buffer",
-	"name": "Click Before Frames",
+	"name": "Click Before Frames (Custom)",
 	"developer": "BASU",
 	"description": "Trajectory-based input buffer: delays early clicks/releases by up to 8+ frames, with orb, pad and portal-aware prediction. github.com/raresdalas1009/-predictive-input-buffer",
 	"settings": {
@@ -142,7 +142,7 @@
 		"show-path": {
 			"type": "bool",
 			"name": "Path view on at start",
-			"description": "Draw the predicted path in the level after each input (toggle any time with F10). Red = what the input would do right now, green = what the game actually gets, white dot = where a delayed input fires, red dot = crash. Costs two extra predictions per click while on.",
+			"description": "Disabled in this custom build; retained for saved-setting compatibility.",
 			"default": false
 		},
 		"orb-align-ground": {
@@ -316,14 +316,14 @@
 		"death-heatmap": {
 			"type": "bool",
 			"name": "Death heatmap",
-			"description": "Red marks on the progress bar where level memory saw you die; brighter = more deaths.",
-			"default": true
+			"description": "Disabled in this custom build; retained for saved-setting compatibility.",
+			"default": false
 		},
 		"save-ding": {
 			"type": "bool",
 			"name": "Ding on save",
-			"description": "Plays a short ding every time the buffer saves one of your clicks.",
-			"default": true
+			"description": "Disabled in this custom build; retained for saved-setting compatibility.",
+			"default": false
 		},
 		"performance-mode": {
 			"type": "bool",
